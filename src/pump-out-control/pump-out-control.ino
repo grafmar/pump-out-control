@@ -54,7 +54,7 @@ void handleDataDownload();
 void loadLogSettings();
 bool saveLogSettings();
 void enforceLogFileLimit();
-void rotateLogs();
+bool rotateLogs();
 void writeLog(uint32_t timestamp, float temperature);
 
 const char *OTAName = "ESP8266";         // A name and a password for the OTA service
@@ -293,15 +293,19 @@ void handleSaveSettings() {
     return;
   }
 
+  uint32_t previousInterval = logInterval;
+  uint8_t previousFileCount = numOfLogFiles;
   logInterval = static_cast<uint32_t>(interval);
   numOfLogFiles = static_cast<uint8_t>(fileCount);
   if (!saveLogSettings()) {
+    logInterval = previousInterval;
+    numOfLogFiles = previousFileCount;
     server.send(500, "text/plain", "500: Failed to save settings");
     return;
   }
 
   enforceLogFileLimit();
-  server.sendHeader("Location", "/config.html");
+  server.sendHeader("Location", "/");
   server.send(303);
 }
 
@@ -359,11 +363,11 @@ void enforceLogFileLimit() {
   }
 }
 
-void rotateLogs() {
+bool rotateLogs() {
   String oldest = "/log_" + String(numOfLogFiles - 1) + ".csv";
   if (LittleFS.exists(oldest) && !LittleFS.remove(oldest)) {
     Serial.printf("Failed to remove oldest log file: %s\n", oldest.c_str());
-    return;
+    return false;
   }
 
   for (int i = numOfLogFiles - 2; i >= 0; i--) {
@@ -371,9 +375,10 @@ void rotateLogs() {
     String newName = "/log_" + String(i + 1) + ".csv";
     if (LittleFS.exists(oldName) && !LittleFS.rename(oldName, newName)) {
       Serial.printf("Failed to rotate log file: %s\n", oldName.c_str());
-      return;
+      return false;
     }
   }
+  return true;
 }
 
 void writeLog(uint32_t timestamp, float temperature) {
@@ -386,7 +391,7 @@ void writeLog(uint32_t timestamp, float temperature) {
     }
     bool full = currentLog.size() >= CHUNK_SIZE_BYTES;
     currentLog.close();
-    if (full) rotateLogs();
+    if (full && !rotateLogs()) return;
   }
 
   File logFile = LittleFS.open(path, "a");
