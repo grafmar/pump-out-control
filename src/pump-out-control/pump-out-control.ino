@@ -51,6 +51,7 @@ uint8_t numOfLogFiles = DEFAULT_NUM_LOG_FILES;
 void handleConfigPage();
 void handleSaveSettings();
 void handleDataDownload();
+void handleListFiles();
 void loadLogSettings();
 bool saveLogSettings();
 void enforceLogFileLimit();
@@ -252,6 +253,7 @@ void startServer() { // Start a HTTP server with a file read handler and an uplo
   server.on("/config.html", HTTP_GET, handleConfigPage);
   server.on("/savesettings", HTTP_GET, handleSaveSettings);
   server.on("/data.csv", HTTP_GET, handleDataDownload);
+  server.on("/list", HTTP_GET, handleListFiles);
 
   server.on("/upload.html", HTTP_POST, []() {
     server.send(200, "text/plain", "");
@@ -276,6 +278,16 @@ void handleConfigPage() {
   file.close();
   html.replace("%INTERVAL%", String(logInterval));
   html.replace("%NUMFILES%", String(numOfLogFiles));
+  server.send(200, "text/html", html);
+}
+
+void handleListFiles() {
+  String html = "<h2>Files</h2><ul>";
+  Dir dir = LittleFS.openDir("/");
+  while (dir.next()) {
+    html += "<li>" + dir.fileName() + " (" + String(dir.fileSize()) + ")</li>";
+  }
+  html += "</ul>";
   server.send(200, "text/html", html);
 }
 

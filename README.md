@@ -26,7 +26,7 @@ The webpage showing a chart of the sensordata with enabled pan and zoom. The dat
 The hardware contains the following parts:
 - Wemod D1 mini (ESP8266 module)
 - HC-SR04 ultrasonic distance sensor
-- n-channel FET ()
+- n-channel FET (FDN359AN)
 - 5V USB water pump
 - 3x 1k resistors for voltage divider
 
