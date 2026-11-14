@@ -1,5 +1,6 @@
 {
- "name": "ESP8266 Sensor Logger",
+ "name": "Simple Sensorlogger ESP32",
+ "short_name": "Sensorlogger",
  "icons": [
   {
    "src": "\/favicon-144x144.png",

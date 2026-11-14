@@ -1,91 +1,17 @@
-const config = {
-  type: 'line',
-  data: data,
-  options: {
-    elements: {
-      point: {
-        radius: 4, // Default radius for all points
-        hoverRadius: 6, // Default hover radius
-      }
-    }
-  }
-};
-
-
-
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
 	<meta charset="UTF-8">
-	<title>Simple Sensorlogger ESP8266</title>
-	<link rel="icon" type="image/png" sizes="144x144" href="/favicon-144x144.png">
-	<link rel="icon" type="image/png" sizes="96x96" href="/favicon.ico">
-	<link rel="manifest" href="/manifest.json">
-  <script src="chart_packed.js"></script>	<style>
-		body {
-			font-family: Arial, sans-serif;
-			background: #f4f6f8;
-			margin: 20px;
-		}
-
-		h1 {
-			text-align: center;
-			margin-bottom: 10px;
-		}
-
-		.controls {
-			max-width: 1000px;
-			margin: auto;
-			display: flex;
-			flex-wrap: wrap;
-			gap: 10px;
-			justify-content: center;
-			margin-bottom: 10px;
-		}
-
-		.controls label {
-			cursor: pointer;
-		}
-
-		.chart-container {
-			max-width: 1100px;
-			margin: 30px auto;
-		}
-
-		canvas {
-			background: #fff;
-			border-radius: 8px;
-			padding: 10px;
-			touch-action: none;
-		}
-
-		.hint {
-			text-align: center;
-			font-size: 14px;
-			color: #555;
-			margin-bottom: 10px;
-		}
-
-		.button {
-			display: inline-block;
-			padding: 8px 14px;
-			background: #2b7cff;
-			color: #fff;
-			text-decoration: none;
-			border-radius: 6px;
-			font-weight: bold;
-			transition: background 0.2s;
-		}
-
-		.button:hover {
-			background: #1f5fd6;
-		}
-	</style>
+	<title>Simple Sensorlogger ESP32</title>
+	<link rel="icon" type="image/png" sizes="144x144" href="favicon-144x144.png">
+	<link rel="icon" type="image/png" sizes="96x96" href="favicon.ico">
+	<link rel="manifest" href="manifest.json">
+	<link rel="stylesheet" href="styles.css">
+  <script src="chart_packed.js"></script>
 </head>
 
 <body>
-	<h1>Simple Sensorlogger ESP8266</h1>
+	<h1>Simple Sensorlogger ESP32</h1>
 
 	<div class="controls">
 		<label><input type="checkbox" data-id="temp1" checked> Temp 1</label>
@@ -97,7 +23,7 @@ const config = {
 	</div>
 
 	<div class="hint">
-		🖱️ Mouse wheel = Zoom &nbsp;|&nbsp;
+		Ctrl + 🖱️ Mouse wheel = Zoom &nbsp;|&nbsp;
 		⇧ Shift + Drag = Zoom (Selection) &nbsp;|&nbsp;
 		Ctrl + Drag = Pan &nbsp;|&nbsp;
 		Double-click = Reset
@@ -123,28 +49,74 @@ const config = {
 	</div>
 
 	<script>
-		Chart.register(ChartZoom);
+		let initialMinX = null;
+		let initialMaxX = null;
 
+		Chart.register(ChartZoom);
+		
+		function formatBytes(n){
+			return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g,"'");
+		}
+		
+		function drawLoading(bytes){
+			const text = "(" + formatBytes(bytes) + " bytes)";
+
+			["chartTempHum","chartCO2Pressure"].forEach(id => {
+				const canvas = document.getElementById(id);
+				const ctx = canvas.getContext("2d");
+
+				ctx.clearRect(0,0,canvas.width,canvas.height);
+
+				ctx.font = "30px Arial";
+				ctx.fillText("Data loading ...",10,80);
+
+				ctx.font = "16px Arial";
+				ctx.fillText(text,10,110);
+			});
+		}
+		
 		/* ================= CSV LOADER ================= */
 		async function loadCSV(url) {
-			
-			const canvas1 = document.getElementById('chartTempHum');
-			const ctx1 = canvas1.getContext('2d');
-			ctx1.font = "30px Arial";
-			ctx1.fillText("Data loading ...",10,80);
-			const canvas2 = document.getElementById('chartCO2Pressure');
-			const ctx2 = canvas2.getContext('2d');
-			ctx2.font = "30px Arial";
-			ctx2.fillText("Data loading ...",10,80);
+			drawLoading(0);
 
 			const resp = await fetch(url);
-			const text = await resp.text();
+
+			const total = resp.headers.get("content-length");
+			const reader = resp.body.getReader();
+
+			let received = 0;
+			let chunks = [];
+
+			while(true){
+				const {done,value} = await reader.read();
+				if(done) break;
+
+				chunks.push(value);
+				received += value.length;
+				
+				drawLoading(received);
+			}
+
+			const blob = new Blob(chunks);
+			const text = await blob.text();
+
+			/* ================= CSV PARSE ================= */
+
 			const rows = text.trim().split('\n');
 
-			const data = { time: [], temp1: [], hum1: [], pressure: [], temp2: [], hum2: [], co2: [] };
+			const data = {
+				time: [],
+				temp1: [],
+				hum1: [],
+				pressure: [],
+				temp2: [],
+				hum2: [],
+				co2: []
+			};
 
-			rows.forEach(line => {
-				const [ts, t1, h1, p, t2, h2, co2] = line.split(';');
+			for(let i=0;i<rows.length;i++){
+
+				const [ts, t1, h1, p, t2, h2, co2] = rows[i].split(';');
 
 				data.time.push(new Date(Number(ts) * 1000));
 				data.temp1.push(t1 !== '' ? Number(t1) : NaN);
@@ -153,7 +125,7 @@ const config = {
 				data.temp2.push(t2 !== '' ? Number(t2) : NaN);
 				data.hum2.push(h2 !== '' ? Number(h2) : NaN);
 				data.co2.push(co2 !== '' ? Number(co2) : NaN);
-			});
+			}
 
 			return data;
 		}
@@ -166,7 +138,7 @@ const config = {
 				plugins: {
 					zoom: {
 						pan: { enabled: true, mode: 'x', modifierKey: 'ctrl' },
-						zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x', drag: { enabled: true, modifierKey: 'shift' } }
+						zoom: { wheel: { enabled: true, modifierKey: 'ctrl' }, pinch: { enabled: true }, mode: 'x', drag: { enabled: true, modifierKey: 'shift' } }
 					}
 				},
 				scales: {
@@ -195,6 +167,9 @@ const config = {
 		let chartTempHum, chartCO2Pressure;
 
 		loadCSV('data.csv').then(data => {
+
+			initialMinX = data.time[0];
+			initialMaxX = data.time[data.time.length - 1];
 
 			chartTempHum = new Chart(document.getElementById('chartTempHum'), {
 				type: 'line',
@@ -263,8 +238,13 @@ const config = {
 
 		/* ================= RESET ================= */
 		document.addEventListener('dblclick', () => {
-			chartTempHum.resetZoom();
-			chartCO2Pressure.resetZoom();
+
+			[chartTempHum, chartCO2Pressure].forEach(c => {
+				c.options.scales.x.min = initialMinX;
+				c.options.scales.x.max = initialMaxX;
+				c.update();
+			});
+
 		});
 	</script>
 

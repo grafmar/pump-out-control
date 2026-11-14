@@ -1,13 +1,15 @@
-# simple-sensorlogger-esp32
-This project logs multiple sensor values to the device’s internal flash memory.
+# pump-out control
+My sanitary facility ha an overflow from the boiler. This ends up in the basement. To reduce the water evaporation because of the spilled water I accumulate the water in a bucket and added a water pump to pump it out.
+The purpose of this project is to control the water pump and log the build-up of the water level and activation time of the pump.
+
+For the logging and display on a localy hosted website I used my (simple-sensorlogger-esp32 project)[https://github.com/grafmar/simple-sensorlogger-esp32].
+
+On every sensor logging event I activate a flag. If the flag is active the water level is measured and written to the log. If the water-level is above a certain level the pump is activated. The water level is then periodically checked in the loop(). If the water level falls below the under threshold the pump is deactivated and the time it was active and the new water level is written to the log. Like this the active pump time and rise of the water level could be clearly monitored.
+
 The recorded data can be accessed through the integrated Web UI, where it is displayed as interactive graphs directly served by the device.
 
-The initial concept was based on the ESP8266 platform. However, the hardware was later switched to the LOLIN Pico C3 (ESP32-C3), mainly due to its integrated battery charger, increased RAM capacity, and improved processing performance for running the embedded web server.
-
-The ESP32-C3 also provides deep-sleep capability for low-power operation and offers more resources for handling data processing and visualization tasks efficiently.
-
 ## Overview
-The device consists of an ESP32 with several sensors connected. This device connects to the WLAN and can be accessed with a PC or smart phone or similar devices.
+The device consists of an ESP8266 connected to a ultrasonic distance sensor HC-SR04. The output controlls a n-channel FET which switches the GND of the pump.
 
 <p align="center"><img src="doc/device_overview.png" alt="Device Overview" width="60%"/></p>
 
