@@ -13,20 +13,27 @@ The device consists of an ESP8266 connected to a ultrasonic distance sensor HC-S
 
 <p align="center"><img src="doc/device_overview.png" alt="Device Overview" width="60%"/></p>
 
-The webserver running on the ESP32 serves the files directly from the filesystem (LittleFS). All the files like javascript html and images are ready to use on the filesystem and no active code has to be executed to show the webpage with the sensor data except for the sensor data themselves. Because they are stored in multiple files, a streaming agent concatenas all files and streams it as one big csv file.
+The webserver running on the ESP8266 serves the files directly from the filesystem (LittleFS). All the files like javascript html and images are ready to use on the filesystem and no active code has to be executed to show the webpage with the sensor data except for the sensor data themselves. Because they are stored in multiple files, a streaming agent concatenas all files and streams it as one big csv file.
 
-On the other hand the sensor sampler samples all the sensors every configured period and stores the data into the log chunkes on the LittleFS.
+On the other hand the sensor sampler handles the ultrasonic distance sensor every configured period and stores the data into the log chunkes on the LittleFS.
 
-<p align="center"><img src="doc/sw_overview.png" alt="SW Overview" width="60%"/></p>
-
-
-The webpage showing a chart of the sensordata with enabled pan and zoom. The data can be hidden/shown using the checkboxes on the top. Check the page [here](https://grafmar.github.io/simple-sensorlogger-esp32/src/sensor_logger/Uncompressed_data/) in a static version with fake data.
+The webpage showing a chart of the sensordata with enabled pan and zoom. The data can be hidden/shown using the checkboxes on the top.
 
 <p align="center"><img src="doc/webpage.png" alt="Webpage" width="60%"/></p>
 
 
 ## Hardware
-The sensors to be used is not yet defined
+The hardware contains the following parts:
+- Wemod D1 mini (ESP8266 module)
+- HC-SR04 ultrasonic distance sensor
+- n-channel FET ()
+- 5V USB water pump
+- 3x 1k resistors for voltage divider
+
+The ESP8266 is connected to an outer 5V power supply. The HC-SR04 is also connected to the 5V and therefore has 5V output logic levels. To bring the echo output of the ultrasonic distance sensor from 5V to 3.3V input level of the ESP8266 a 1:3 voltage divider is used. The trigger input of the HC-SR04 also works with the 3.3V voltage level.
+To drive the pump a n-channel FET is used which switches the GND to the pump. Because we handle a inductive load a diode is added parallel to the pump output. The gate of the FET is controlled by the output D2 of the ESP8266.
+
+<p align="center"><img src="doc/hardware.png" alt="Hardware" width="60%"/></p>
 
 ## Software
 This project is still under construction. At the moment only a random number is logged as a temperature value.

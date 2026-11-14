@@ -7,6 +7,10 @@
 #include <LittleFS.h>
 
 #define ONE_HOUR 3600000UL
+#define DEFAULT_LOG_INTERVAL_S 1200UL
+#define DEFAULT_NUM_LOG_FILES 16
+#define CHUNK_SIZE_BYTES 32768
+#define MAX_LOG_FILES 48
 
 // Dummy Klasse für den TempSensor
 class TempSensor {
@@ -41,6 +45,17 @@ TempSensor tempSensors; // Create an instance of the temperature sensor class
 ESP8266WebServer server(80);             // create a web server on port 80
 
 File fsUploadFile;                                    // a File variable to temporarily store the received file
+uint32_t logInterval = DEFAULT_LOG_INTERVAL_S;
+uint8_t numOfLogFiles = DEFAULT_NUM_LOG_FILES;
+
+void handleConfigPage();
+void handleSaveSettings();
+void handleDataDownload();
+void loadLogSettings();
+bool saveLogSettings();
+void enforceLogFileLimit();
+void rotateLogs();
+void writeLog(uint32_t timestamp, float temperature);
 
 const char *OTAName = "ESP8266";         // A name and a password for the OTA service
 const char *OTAPassword = "esp8266";
@@ -77,6 +92,12 @@ void setup() {
   startOTA();                  // Start the OTA service
 
   startLittleFS();             // Start the LittleFS and list all contents
+  if (!LittleFS.exists("/log_0.csv") && LittleFS.exists("/data.csv")) {
+    if (!LittleFS.rename("/data.csv", "/log_0.csv")) {
+      Serial.println("Failed to migrate legacy data.csv.");
+    }
+  }
+  loadLogSettings();
 
   startMDNS();                 // Start the mDNS responder
 
@@ -98,7 +119,6 @@ const unsigned long intervalNTP = ONE_HOUR; // Update the time every hour
 unsigned long prevNTP = 0;
 unsigned long lastNTPResponse = millis();
 
-const unsigned long intervalTemp = 60000;   // Do a temperature measurement every minute
 unsigned long prevTemp = 0;
 bool tmpRequested = false;
 const unsigned long DS_delay = 750;         // Reading the temperature from the DS18x20 can take up to 750ms
@@ -126,7 +146,7 @@ void loop() {
   }
 
   if (timeUNIX != 0) {
-    if (currentMillis - prevTemp > intervalTemp) {  // Every minute, request the temperature
+    if (currentMillis - prevTemp > logInterval * 1000UL) {
       tempSensors.requestTemperatures(); // Request the temperature from the sensor (it takes some time to read it)
       tmpRequested = true;
       prevTemp = currentMillis;
@@ -141,12 +161,7 @@ void loop() {
 
       Serial.printf("Appending temperature to file: %lu;", actualTime);
       Serial.println(temp);
-      File tempLog = LittleFS.open("/data.csv", "a"); // Write the time and the temperature to the csv file
-      tempLog.print(actualTime);
-      tempLog.print(';');
-      tempLog.print(temp);
-      tempLog.println(";;;;;");
-      tempLog.close();
+      writeLog(actualTime, temp);
     }
   } else {                                    // If we didn't receive an NTP response yet, send another request
     sendNTPpacket(timeServerIP);
@@ -163,7 +178,7 @@ void startWiFi() { // Try to connect to some given access points. Then wait for 
   WiFiManager wm;
   wm.setTimeout(180);               // 3 Minuten Portal-Zeit
 
-  if (!wm.autoConnect("Sensorlogger-AP")) {
+  if (!wm.autoConnect("Pump-out-controller-AP")) {
     Serial.println("WiFi failed. Rebooting.");
     delay(3000);
     ESP.reset();
@@ -207,7 +222,13 @@ void startOTA() { // Start the OTA service
 }
 
 void startLittleFS() { // Start the LittleFS and list all contents
-  LittleFS.begin();                             // Start the SPI Flash File System (LittleFS)
+  if (!LittleFS.begin()) {
+    Serial.println("LittleFS mount failed. Rebooting.");
+    Serial.flush();
+    ESP.reset();
+    return;
+  }
+
   Serial.println("LittleFS started. Contents:");
   {
     Dir dir = LittleFS.openDir("/");
@@ -228,15 +249,192 @@ void startMDNS() { // Start the mDNS responder
 }
 
 void startServer() { // Start a HTTP server with a file read handler and an upload handler
-  server.on("/edit.html",  HTTP_POST, []() {  // If a POST request is sent to the /edit.html address,
+  server.on("/config.html", HTTP_GET, handleConfigPage);
+  server.on("/savesettings", HTTP_GET, handleSaveSettings);
+  server.on("/data.csv", HTTP_GET, handleDataDownload);
+
+  server.on("/upload.html", HTTP_POST, []() {
     server.send(200, "text/plain", "");
-  }, handleFileUpload);                       // go to 'handleFileUpload'
+  }, handleFileUpload);
 
   server.onNotFound(handleNotFound);          // if someone requests any other file or page, go to function 'handleNotFound'
   // and check if the file exists
 
   server.begin();                             // start the HTTP server
   Serial.println("HTTP server started.");
+}
+
+void handleConfigPage() {
+  File file = LittleFS.open("/config.html.template", "r");
+  if (!file) {
+    Serial.println("Failed to open config.html.template");
+    server.send(500, "text/plain", "500: Config template unavailable");
+    return;
+  }
+
+  String html = file.readString();
+  file.close();
+  html.replace("%INTERVAL%", String(logInterval));
+  html.replace("%NUMFILES%", String(numOfLogFiles));
+  server.send(200, "text/html", html);
+}
+
+void handleSaveSettings() {
+  if (!server.hasArg("interval") || !server.hasArg("numChunks")) {
+    server.send(400, "text/plain", "400: Missing settings");
+    return;
+  }
+
+  long interval = server.arg("interval").toInt();
+  long fileCount = server.arg("numChunks").toInt();
+  if (interval < 1 || interval > 1000000L ||
+      fileCount < 2 || fileCount > MAX_LOG_FILES) {
+    server.send(400, "text/plain", "400: Settings out of range");
+    return;
+  }
+
+  logInterval = static_cast<uint32_t>(interval);
+  numOfLogFiles = static_cast<uint8_t>(fileCount);
+  if (!saveLogSettings()) {
+    server.send(500, "text/plain", "500: Failed to save settings");
+    return;
+  }
+
+  enforceLogFileLimit();
+  server.sendHeader("Location", "/config.html");
+  server.send(303);
+}
+
+void loadLogSettings() {
+  if (LittleFS.exists("/logcfg.txt")) {
+    File file = LittleFS.open("/logcfg.txt", "r");
+    if (file) {
+      long interval = file.readStringUntil('\n').toInt();
+      long fileCount = file.readStringUntil('\n').toInt();
+      file.close();
+
+      if (interval >= 1 && interval <= 1000000L)
+        logInterval = static_cast<uint32_t>(interval);
+      else
+        Serial.println("Invalid saved log interval; using default.");
+
+      if (fileCount >= 2 && fileCount <= MAX_LOG_FILES)
+        numOfLogFiles = static_cast<uint8_t>(fileCount);
+      else
+        Serial.println("Invalid saved log file count; using default.");
+    } else {
+      Serial.println("Failed to open logcfg.txt; using default settings.");
+    }
+  } else if (!saveLogSettings()) {
+    Serial.println("Failed to create logcfg.txt.");
+  }
+
+  enforceLogFileLimit();
+  Serial.printf("Log settings: interval=%lu s, files=%u\n",
+                static_cast<unsigned long>(logInterval),
+                static_cast<unsigned int>(numOfLogFiles));
+}
+
+bool saveLogSettings() {
+  File file = LittleFS.open("/logcfg.txt", "w");
+  if (!file) {
+    Serial.println("Failed to open logcfg.txt for writing.");
+    return false;
+  }
+
+  bool success = file.print(logInterval) > 0;
+  success = (file.print('\n') == 1) && success;
+  success = (file.print(numOfLogFiles) > 0) && success;
+  success = (file.print('\n') == 1) && success;
+  file.close();
+  return success;
+}
+
+void enforceLogFileLimit() {
+  for (int i = numOfLogFiles; i < MAX_LOG_FILES; i++) {
+    String path = "/log_" + String(i) + ".csv";
+    if (LittleFS.exists(path) && !LittleFS.remove(path)) {
+      Serial.printf("Failed to remove excess log file: %s\n", path.c_str());
+    }
+  }
+}
+
+void rotateLogs() {
+  String oldest = "/log_" + String(numOfLogFiles - 1) + ".csv";
+  if (LittleFS.exists(oldest) && !LittleFS.remove(oldest)) {
+    Serial.printf("Failed to remove oldest log file: %s\n", oldest.c_str());
+    return;
+  }
+
+  for (int i = numOfLogFiles - 2; i >= 0; i--) {
+    String oldName = "/log_" + String(i) + ".csv";
+    String newName = "/log_" + String(i + 1) + ".csv";
+    if (LittleFS.exists(oldName) && !LittleFS.rename(oldName, newName)) {
+      Serial.printf("Failed to rotate log file: %s\n", oldName.c_str());
+      return;
+    }
+  }
+}
+
+void writeLog(uint32_t timestamp, float temperature) {
+  String path = "/log_0.csv";
+  if (LittleFS.exists(path)) {
+    File currentLog = LittleFS.open(path, "r");
+    if (!currentLog) {
+      Serial.println("Failed to open current log for size check.");
+      return;
+    }
+    bool full = currentLog.size() >= CHUNK_SIZE_BYTES;
+    currentLog.close();
+    if (full) rotateLogs();
+  }
+
+  File logFile = LittleFS.open(path, "a");
+  if (!logFile) {
+    Serial.println("Failed to open log_0.csv for writing.");
+    return;
+  }
+
+  logFile.print(timestamp);
+  logFile.print(';');
+  logFile.print(temperature, 2);
+  logFile.print(';');
+  logFile.print(2 * temperature, 2);
+  logFile.print(';');
+  logFile.print(45.0 - 1.2 * temperature, 2);
+  logFile.print(';');
+  logFile.print(2 * (45.0 - temperature), 2);
+  logFile.print(';');
+  logFile.print(2.0 + 1.1 * temperature, 2);
+  logFile.print(';');
+  logFile.println(43.0 - temperature, 2);
+  logFile.close();
+}
+
+void handleDataDownload() {
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/csv", "");
+
+  uint8_t buffer[512];
+  for (int i = numOfLogFiles - 1; i >= 0; i--) {
+    String path = "/log_" + String(i) + ".csv";
+    if (!LittleFS.exists(path)) continue;
+
+    File logFile = LittleFS.open(path, "r");
+    if (!logFile) {
+      Serial.printf("Failed to open log for download: %s\n", path.c_str());
+      continue;
+    }
+
+    while (logFile.available()) {
+      size_t bytesRead = logFile.read(buffer, sizeof(buffer));
+      if (bytesRead == 0) break;
+      server.sendContent(reinterpret_cast<const char*>(buffer), bytesRead);
+    }
+    logFile.close();
+  }
+
+  server.sendContent("");
 }
 
 /*__________________________________________________________SERVER_HANDLERS__________________________________________________________*/
@@ -252,17 +450,23 @@ bool handleFileRead(String path) { // send the right file to the client (if it e
   if (path.endsWith("/")) path += "index.html";          // If a folder is requested, send the index file
   String contentType = getContentType(path);             // Get the MIME type
   String pathWithGz = path + ".gz";
-  if (LittleFS.exists(pathWithGz) || LittleFS.exists(path)) { // If the file exists, either as a compressed archive, or normal
-    if (LittleFS.exists(pathWithGz))                         // If there's a compressed version available
-      path += ".gz";                                         // Use the compressed verion
-    File file = LittleFS.open(path, "r");                    // Open the file
-    size_t sent = server.streamFile(file, contentType);    // Send it to the client
-    file.close();                                          // Close the file again
-    Serial.println(String("\tSent file: ") + path);
-    return true;
+  bool compressed = LittleFS.exists(pathWithGz);
+  if (compressed) path = pathWithGz;
+  if (!compressed && !LittleFS.exists(path)) {
+    Serial.println(String("\tFile Not Found: ") + path);
+    return false;
   }
-  Serial.println(String("\tFile Not Found: ") + path);   // If the file doesn't exist, return false
-  return false;
+
+  File file = LittleFS.open(path, "r");
+  if (!file) {
+    Serial.println(String("\tFailed to open: ") + path);
+    return false;
+  }
+
+  server.streamFile(file, contentType);
+  file.close();
+  Serial.println(String("\tSent file: ") + path);
+  return true;
 }
 
 void handleFileUpload() { // upload a new file to the LittleFS
@@ -310,6 +514,7 @@ String getContentType(String filename) { // determine the filetype of a given fi
   if (filename.endsWith(".html")) return "text/html";
   else if (filename.endsWith(".css")) return "text/css";
   else if (filename.endsWith(".js")) return "application/javascript";
+  else if (filename.endsWith(".json")) return "application/json";
   else if (filename.endsWith(".ico")) return "image/x-icon";
   else if (filename.endsWith(".png")) return "image/png";
   else if (filename.endsWith(".gz")) return "application/x-gzip";
