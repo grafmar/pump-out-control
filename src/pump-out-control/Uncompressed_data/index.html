@@ -36,9 +36,21 @@
 		<canvas id="pumpOutChart"></canvas>
 	</div>
 
+	<div class="controls">
+		<label><input type="checkbox" data-chart="waterVolumeChart" data-id="accumulatedWater" checked> Accumulated water (L)</label>
+		<label><input type="checkbox" data-chart="waterVolumeChart" data-id="averageWaterPerDay" checked> Average water per day (L/day)</label>
+	</div>
+
+	<div class="chart-container">
+		<h3>Water volume</h3>
+		<canvas id="waterVolumeChart"></canvas>
+	</div>
+
 	<script>
 		let initialMinX = null;
 		let initialMaxX = null;
+		const BUCKET_DIAMETER_CM = 26;
+		const LITERS_PER_CM = Math.PI * (BUCKET_DIAMETER_CM / 2) ** 2 / 1000;
 
 		Chart.register(ChartZoom);
 
@@ -76,7 +88,50 @@
 			return data;
 		}
 
-		function baseOptions() {
+		function calculatePumpMetrics(data) {
+			const accumulatedWater = [];
+			const averageWaterPerDay = [];
+			let cumulativeLiters = 0;
+			let previousPumpEventTime = null;
+			let sampleIndex = 0;
+			let waterLevelBeforePump = NaN;
+
+			for (let i = 0; i < data.time.length; i++) {
+				accumulatedWater.push(cumulativeLiters);
+				averageWaterPerDay.push(NaN);
+
+				if (!Number.isFinite(data.pumpRuntime[i]) || data.pumpRuntime[i] <= 0) continue;
+
+				const eventTime = data.time[i].getTime();
+				const pumpStartTime = eventTime - data.pumpRuntime[i] * 1000;
+				while (sampleIndex < i && data.time[sampleIndex].getTime() <= pumpStartTime) {
+					if (Number.isFinite(data.waterLevel[sampleIndex])) {
+						waterLevelBeforePump = data.waterLevel[sampleIndex];
+					}
+					sampleIndex++;
+				}
+
+				const waterLevelAfterPump = data.waterLevel[i];
+				const eventVolume = Number.isFinite(waterLevelBeforePump) && Number.isFinite(waterLevelAfterPump)
+					? Math.max(0, waterLevelBeforePump - waterLevelAfterPump) * LITERS_PER_CM
+					: NaN;
+
+				if (Number.isFinite(eventVolume)) {
+					cumulativeLiters += eventVolume;
+					accumulatedWater[i] = cumulativeLiters;
+					if (previousPumpEventTime !== null) {
+						const elapsedDays = (eventTime - previousPumpEventTime) / 86400000;
+						if (elapsedDays > 0) averageWaterPerDay[i] = eventVolume / elapsedDays;
+					}
+				}
+
+				previousPumpEventTime = eventTime;
+			}
+
+			return { accumulatedWater, averageWaterPerDay };
+		}
+
+		function baseOptions(leftAxisId, leftAxisTitle, rightAxisId, rightAxisTitle) {
 			return {
 				responsive: true,
 				interaction: { mode: "index", intersect: false },
@@ -118,13 +173,13 @@
 							}
 						}
 					},
-					level: {
+					[leftAxisId]: {
 						position: "left",
-						title: { display: true, text: "cm" }
+						title: { display: true, text: leftAxisTitle }
 					},
-					runtime: {
+					[rightAxisId]: {
 						position: "right",
-						title: { display: true, text: "s" },
+						title: { display: true, text: rightAxisTitle },
 						grid: { drawOnChartArea: false }
 					}
 				}
@@ -132,6 +187,7 @@
 		}
 
 		let pumpOutChart;
+		let waterVolumeChart;
 
 		loadCSV("data.csv").then(data => {
 			if (data.time.length === 0) {
@@ -141,6 +197,7 @@
 
 			initialMinX = data.time[0];
 			initialMaxX = data.time[data.time.length - 1];
+
 			pumpOutChart = new Chart(document.getElementById("pumpOutChart"), {
 				type: "line",
 				data: {
@@ -166,15 +223,46 @@
 						}
 					]
 				},
-				options: baseOptions()
+				options: baseOptions("level", "cm", "runtime", "s")
+			});
+
+			const pumpMetrics = calculatePumpMetrics(data);
+			waterVolumeChart = new Chart(document.getElementById("waterVolumeChart"), {
+				type: "line",
+				data: {
+					labels: data.time,
+					datasets: [
+						{
+							id: "accumulatedWater",
+							label: "Accumulated water (L)",
+							data: pumpMetrics.accumulatedWater,
+							borderColor: "green",
+							pointRadius: 0,
+							stepped: "after",
+							yAxisID: "volume"
+						},
+						{
+							id: "averageWaterPerDay",
+							label: "Average water per day (L/day)",
+							data: pumpMetrics.averageWaterPerDay,
+							borderColor: "purple",
+							backgroundColor: "purple",
+							showLine: false,
+							pointRadius: 4,
+							yAxisID: "dailyVolume"
+						}
+					]
+				},
+				options: baseOptions("volume", "L", "dailyVolume", "L/day")
 			});
 
 			document.querySelectorAll('.controls input[type="checkbox"]').forEach(checkbox => {
 				checkbox.onchange = () => {
-					const dataset = pumpOutChart.data.datasets.find(item => item.id === checkbox.dataset.id);
+					const chart = checkbox.dataset.chart === "waterVolumeChart" ? waterVolumeChart : pumpOutChart;
+					const dataset = chart.data.datasets.find(item => item.id === checkbox.dataset.id);
 					if (dataset) {
 						dataset.hidden = !checkbox.checked;
-						pumpOutChart.update();
+						chart.update();
 					}
 				};
 			});
@@ -184,10 +272,12 @@
 		});
 
 		document.addEventListener("dblclick", () => {
-			if (!pumpOutChart) return;
-			pumpOutChart.options.scales.x.min = initialMinX;
-			pumpOutChart.options.scales.x.max = initialMaxX;
-			pumpOutChart.update();
+			for (const chart of [pumpOutChart, waterVolumeChart]) {
+				if (!chart) continue;
+				chart.options.scales.x.min = initialMinX;
+				chart.options.scales.x.max = initialMaxX;
+				chart.update();
+			}
 		});
 	</script>
 </body>
