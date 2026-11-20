@@ -4,7 +4,7 @@ The purpose of this project is to control the water pump and log the build-up of
 
 For the logging and display on a localy hosted website I used my (simple-sensorlogger-esp32 project)[https://github.com/grafmar/simple-sensorlogger-esp32].
 
-On every sensor logging event I activate a flag. If the flag is active the water level is measured and written to the log. If the water-level is above a certain level the pump is activated. The water level is then periodically checked in the loop(). If the water level falls below the under threshold the pump is deactivated and the time it was active and the new water level is written to the log. Like this the active pump time and rise of the water level could be clearly monitored.
+The water level is checked independently of the configurable logging interval. When the measured distance reaches the upper threshold, the pump starts. It keeps running until the distance reaches the lower threshold or has run for 20 minutes, whichever comes first. The pump runtime and water level are logged when pumping stops.
 
 The recorded data can be accessed through the integrated Web UI, where it is displayed as interactive graphs directly served by the device.
 
@@ -30,13 +30,15 @@ The hardware contains the following parts:
 - 5V USB water pump
 - 3x 1k resistors for voltage divider
 
-The ESP8266 is connected to an outer 5V power supply. The HC-SR04 is also connected to the 5V and therefore has 5V output logic levels. To bring the echo output of the ultrasonic distance sensor from 5V to 3.3V input level of the ESP8266 a 1:3 voltage divider is used. The trigger input of the HC-SR04 also works with the 3.3V voltage level.
-To drive the pump a n-channel FET is used which switches the GND to the pump. Because we handle a inductive load a diode is added parallel to the pump output. The gate of the FET is controlled by the output D2 of the ESP8266.
+The ESP8266 is connected to an outer 5V power supply. The HC-SR04 is also connected to 5V and therefore has 5V output logic levels. Bring the echo output from 5V down to the ESP8266's 3.3V input level using a voltage divider. The trigger input of the HC-SR04 works with the ESP8266's 3.3V output.
+The firmware uses D5 for TRIG, D8 for ECHO, and D2 to control the pump FET. D8/GPIO15 is a boot-strap pin and must remain LOW while the ESP8266 starts. To drive the pump, an n-channel FET switches its GND. Because the pump is an inductive load, add a diode parallel to the pump.
 
 <p align="center"><img src="doc/hardware.png" alt="Hardware" width="60%"/></p>
 
 ## Software
-This project is still under construction. At the moment only a random number is logged as a temperature value.
+The firmware uses the `HCSR04` library to measure the sensor distance every second. It averages the valid results from five readings; at least three readings must be within 5-50 cm for the batch to be valid. Water level is calculated as `31 cm - measured distance`. The pump starts at a water level of 21 cm (10 cm sensor distance) and stops at 3 cm (28 cm sensor distance). Three consecutive invalid measurement batches stop an active pump. A 20-minute maximum runtime also stops the pump if the low-level threshold is not reached.
+
+The configurable logging interval controls periodic water-level records. A sample is stored as `timestamp;water_level_cm;`; after pumping stops, one row is stored as `timestamp;water_level_cm;pump_runtime_seconds`. There are no separate pump-start or event rows. Pump runtime is measured with the ESP8266 monotonic clock, while timestamps use NTP. Entries are not buffered: if NTP time is unavailable when an entry is written, it is discarded.
 
 ### Log File Handling
 Sensor data is stored in rotating log files.
@@ -65,34 +67,28 @@ The physical log files remain separate on the device; data.csv is generated on-t
 <p align="center"><img src="doc/log_writing_streaming.png" alt="Log writing and streaming"/><br>log writing and streaming</p>
 
 ## Installation
-To program the ESP32 for this project you need the following SW and additional libraries and packages:
-- Arduino IDE (V2.3.7)
-- ESP Async Webserver (3.10.0) by ESP32Async
-- Async TCP (3.4.10) by ESP32Async
-- Board support package `esp32` by Espressif Systems (V3.3.6)
-- LittleFS_esp32 by lorol (1.0.6)
+Install the following software and libraries:
 
-Note:
-*Problems may occur with Async webserver if the wrong libraries are used: ESP core 3.x.x is not compatible with the libraries.*
+- Arduino IDE (>=2.3.10)
+- ESP8266 board support package (>=2.6.0; provides LittleFS)
+- Libraries, installed through Library Manager:
+  - WiFiManager (>=0.14)
+  - [HCSR04 by Martin Sosic](https://github.com/Martinsos/arduino-lib-hc-sr04) (>=1.0.0)
+- LittleFS uploader:
+  - [arduino-littlefs-upload](https://github.com/earlephilhower/arduino-littlefs-upload?tab=readme-ov-file): copy its VSIX file to `C:\Users\<username>\.arduinoIDE\plugins\` on Windows (create the directory if needed), then restart the IDE.
+  - Alternatively, use `esp8266littlefs.jar` from the [arduino-esp8266littlefs-plugin releases](https://github.com/earlephilhower/arduino-esp8266littlefs-plugin/releases). See the [installation instructions](https://randomnerdtutorials.com/install-esp8266-nodemcu-littlefs-arduino/#installing).
 
+The ESP8266 core provides the web server, OTA, mDNS, UDP, and LittleFS libraries.
 
-- LittleFS uploader tool [arduino-littlefs-upload](https://github.com/earlephilhower/arduino-littlefs-upload?tab=readme-ov-file):
-  - Copy the VSIX file to C:\Users\<username>\.arduinoIDE\plugins\ on Windows (you may need to make this directory yourself beforehand). Restart the IDE.
+To compile and upload the firmware:
 
- tool `esp8266littlefs.jar`:
-  - from [arduino-esp8266littlefs-plugin](https://github.com/earlephilhower/arduino-esp8266littlefs-plugin/releases)
-  - check [install documentation](https://randomnerdtutorials.com/install-esp8266-nodemcu-littlefs-arduino/#installing)
+- Open `src/pump-out-control/pump-out-control.ino`, connect the Wemos D1 mini over USB, select its serial port, and choose `LOLIN(WEMOS) D1 R2 & mini`.
+- Select **Tools -> Partition Scheme -> `No OTA (2MB APP/2MB SPIFFS)`**.
 
-Open sensor_logger.ino project connect the Wemos D1 R2 mini via USB. Select the right serial port and select the board `LOLIN(WEMOS) D1 R2 & mini`.
+  <img src="doc/memory_setting.png" alt="Memory setting"/>
 
-Select the right memory segmentation: Tools -> Partition Scheme -> `No OTA (2MB APP/2MB SPIFFS)`
-
-<img src="doc/memory_setting.png" alt="Memory setting"/>
-
-Compile and upload the code to the ESP8266.
-
-
-To upload the data to the LittleFS you type: `[Ctrl]` + `[Shift]` + `[P]`, then "`Upload LittleFS to Pico/ESP8266/ESP32`". Check that the serial monitor is turned off, otherwise it won't work.
+- Compile and upload the sketch to the ESP8266.
+- Upload the filesystem image using **Ctrl+Shift+P -> Upload LittleFS to Pico/ESP8266/ESP32**. Close the serial monitor before uploading.
 
 ## Speed
 Download of 1.5MB data.csv:

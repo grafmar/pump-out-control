@@ -2,24 +2,21 @@
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
-	<title>Simple Sensorlogger ESP32</title>
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Pump-out Control</title>
 	<link rel="icon" type="image/png" sizes="144x144" href="favicon-144x144.png">
 	<link rel="icon" type="image/png" sizes="96x96" href="favicon.ico">
 	<link rel="manifest" href="manifest.json">
 	<link rel="stylesheet" href="styles.css">
-  <script src="chart_packed.js"></script>
+	<script src="chart_packed.js"></script>
 </head>
 
 <body>
-	<h1>Simple Sensorlogger ESP32</h1>
+	<h1>Pump-out Control</h1>
 
 	<div class="controls">
-		<label><input type="checkbox" data-id="temp1" checked> Temp 1</label>
-		<label><input type="checkbox" data-id="temp2" checked> Temp 2</label>
-		<label><input type="checkbox" data-id="hum1" checked> Humidity 1</label>
-		<label><input type="checkbox" data-id="hum2" checked> Humidity 2</label>
-		<label><input type="checkbox" data-id="co2" checked> CO₂</label>
-		<label><input type="checkbox" data-id="pressure" checked> Pressure</label>
+		<label><input type="checkbox" data-id="waterLevel" checked> Water level (cm)</label>
+		<label><input type="checkbox" data-id="pumpRuntime" checked> Pump runtime (s)</label>
 	</div>
 
 	<div class="hint">
@@ -30,22 +27,13 @@
 	</div>
 
 	<div class="controls">
-		<a href="data.csv" download class="button">
-			⬇ Download data.csv
-		</a>
-		<a href="config.html" class="button">
-			Configure Logger
-		</a>
+		<a href="data.csv" download class="button">⬇ Download data.csv</a>
+		<a href="config.html" class="button">Configure Logger</a>
 	</div>
 
 	<div class="chart-container">
-		<h3>Temperature & Humidity</h3>
-		<canvas id="chartTempHum"></canvas>
-	</div>
-
-	<div class="chart-container">
-		<h3>CO₂ & Air Pressure</h3>
-		<canvas id="chartCO2Pressure"></canvas>
+		<h3>Water level and pump runtime</h3>
+		<canvas id="pumpOutChart"></canvas>
 	</div>
 
 	<script>
@@ -53,201 +41,154 @@
 		let initialMaxX = null;
 
 		Chart.register(ChartZoom);
-		
-		function formatBytes(n){
-			return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g,"'");
+
+		function drawMessage(message) {
+			const canvas = document.getElementById("pumpOutChart");
+			const ctx = canvas.getContext("2d");
+			ctx.clearRect(0, 0, canvas.width, canvas.height);
+			ctx.font = "20px Arial";
+			ctx.fillText(message, 10, 40);
 		}
-		
-		function drawLoading(bytes){
-			const text = "(" + formatBytes(bytes) + " bytes)";
 
-			["chartTempHum","chartCO2Pressure"].forEach(id => {
-				const canvas = document.getElementById(id);
-				const ctx = canvas.getContext("2d");
-
-				ctx.clearRect(0,0,canvas.width,canvas.height);
-
-				ctx.font = "30px Arial";
-				ctx.fillText("Data loading ...",10,80);
-
-				ctx.font = "16px Arial";
-				ctx.fillText(text,10,110);
-			});
-		}
-		
-		/* ================= CSV LOADER ================= */
 		async function loadCSV(url) {
-			drawLoading(0);
+			drawMessage("Data loading ...");
 
-			const resp = await fetch(url);
+			const response = await fetch(url);
+			if (!response.ok) throw new Error("Could not load " + url + ": " + response.status);
+			const text = await response.text();
+			const data = { time: [], waterLevel: [], pumpRuntime: [] };
 
-			const total = resp.headers.get("content-length");
-			const reader = resp.body.getReader();
+			for (const row of text.split(/\r?\n/)) {
+				if (!row) continue;
+				const columns = row.split(";");
+				if (columns.length !== 3) continue;
 
-			let received = 0;
-			let chunks = [];
+				const timestamp = Number(columns[0]);
+				const waterLevel = columns[1] === "" ? NaN : Number(columns[1]);
+				const runtime = columns[2] === "" ? NaN : Number(columns[2]);
+				if (!Number.isFinite(timestamp)) continue;
 
-			while(true){
-				const {done,value} = await reader.read();
-				if(done) break;
-
-				chunks.push(value);
-				received += value.length;
-				
-				drawLoading(received);
-			}
-
-			const blob = new Blob(chunks);
-			const text = await blob.text();
-
-			/* ================= CSV PARSE ================= */
-
-			const rows = text.trim().split('\n');
-
-			const data = {
-				time: [],
-				temp1: [],
-				hum1: [],
-				pressure: [],
-				temp2: [],
-				hum2: [],
-				co2: []
-			};
-
-			for(let i=0;i<rows.length;i++){
-
-				const [ts, t1, h1, p, t2, h2, co2] = rows[i].split(';');
-
-				data.time.push(new Date(Number(ts) * 1000));
-				data.temp1.push(t1 !== '' ? Number(t1) : NaN);
-				data.hum1.push(h1 !== '' ? Number(h1) : NaN);
-				data.pressure.push(p !== '' ? Number(p) : NaN);
-				data.temp2.push(t2 !== '' ? Number(t2) : NaN);
-				data.hum2.push(h2 !== '' ? Number(h2) : NaN);
-				data.co2.push(co2 !== '' ? Number(co2) : NaN);
+				data.time.push(new Date(timestamp * 1000));
+				data.waterLevel.push(Number.isFinite(waterLevel) ? waterLevel : NaN);
+				data.pumpRuntime.push(Number.isFinite(runtime) ? runtime : NaN);
 			}
 
 			return data;
 		}
 
-		/* ================= OPTIONS ================= */
 		function baseOptions() {
 			return {
 				responsive: true,
-				interaction: { mode: 'index', intersect: false },
+				interaction: { mode: "index", intersect: false },
 				plugins: {
 					zoom: {
-						pan: { enabled: true, mode: 'x', modifierKey: 'ctrl' },
-						zoom: { wheel: { enabled: true, modifierKey: 'ctrl' }, pinch: { enabled: true }, mode: 'x', drag: { enabled: true, modifierKey: 'shift' } }
+						pan: { enabled: true, mode: "x", modifierKey: "ctrl" },
+						zoom: {
+							wheel: { enabled: true, modifierKey: "ctrl" },
+							pinch: { enabled: true },
+							mode: "x",
+							drag: { enabled: true, modifierKey: "shift" }
+						}
 					}
 				},
 				scales: {
 					x: {
-						type: 'time',
+						type: "time",
 						time: {
-							tooltipFormat: 'dd.MM.yyyy HH:mm',
-							displayFormats: { second: 'dd.MM.yyyy\nHH:mm:ss', minute: 'dd.MM.yyyy\nHH:mm', hour: 'dd.MM.yyyy\nHH:mm', day: 'dd.MM.yyyy', month: 'dd.MM.yyyy' }
+							tooltipFormat: "dd.MM.yyyy HH:mm",
+							displayFormats: {
+								second: "dd.MM.yyyy\nHH:mm:ss",
+								minute: "dd.MM.yyyy\nHH:mm",
+								hour: "dd.MM.yyyy\nHH:mm",
+								day: "dd.MM.yyyy",
+								month: "dd.MM.yyyy"
+							}
 						},
 						ticks: {
-							source: 'auto', maxTicksLimit: 10, autoSkip: true, maxRotation: 0,
+							source: "auto",
+							maxTicksLimit: 10,
+							autoSkip: true,
+							maxRotation: 0,
 							callback: function (value) {
-								const d = new Date(value);
+								const date = new Date(value);
 								return [
-									d.toLocaleDateString('de-CH'), // row 1
-									d.toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' }) // row 2
+									date.toLocaleDateString("de-CH"),
+									date.toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit" })
 								];
 							}
 						}
+					},
+					level: {
+						position: "left",
+						title: { display: true, text: "cm" }
+					},
+					runtime: {
+						position: "right",
+						title: { display: true, text: "s" },
+						grid: { drawOnChartArea: false }
 					}
 				}
 			};
 		}
 
-		/* ================= INIT CHARTS ================= */
-		let chartTempHum, chartCO2Pressure;
+		let pumpOutChart;
 
-		loadCSV('data.csv').then(data => {
+		loadCSV("data.csv").then(data => {
+			if (data.time.length === 0) {
+				drawMessage("No compatible water-level data available.");
+				return;
+			}
 
 			initialMinX = data.time[0];
 			initialMaxX = data.time[data.time.length - 1];
-
-			chartTempHum = new Chart(document.getElementById('chartTempHum'), {
-				type: 'line',
+			pumpOutChart = new Chart(document.getElementById("pumpOutChart"), {
+				type: "line",
 				data: {
 					labels: data.time,
 					datasets: [
-						{ id: 'temp1', label: 'Temp 1 (°C)', data: data.temp1, borderColor: 'red', yAxisID: 'yT' },
-						{ id: 'temp2', label: 'Temp 2 (°C)', data: data.temp2, borderColor: 'orange', yAxisID: 'yT' },
-						{ id: 'hum1', label: 'Humidity 1 (%)', data: data.hum1, borderColor: 'blue', yAxisID: 'yH' },
-						{ id: 'hum2', label: 'Humidity 2 (%)', data: data.hum2, borderColor: 'cyan', yAxisID: 'yH' }
+						{
+							id: "waterLevel",
+							label: "Water level (cm)",
+							data: data.waterLevel,
+							borderColor: "blue",
+							pointRadius: 2,
+							yAxisID: "level"
+						},
+						{
+							id: "pumpRuntime",
+							label: "Pump runtime (s)",
+							data: data.pumpRuntime,
+							borderColor: "orange",
+							backgroundColor: "orange",
+							showLine: false,
+							pointRadius: 4,
+							yAxisID: "runtime"
+						}
 					]
 				},
-				options: {
-					...baseOptions(),
-					scales: {
-						x: baseOptions().scales.x,
-						yT: { position: 'left', title: { display: true, text: '°C' } },
-						yH: { position: 'right', title: { display: true, text: '%' }, grid: { drawOnChartArea: false } }
-					}
-				}
+				options: baseOptions()
 			});
 
-			chartCO2Pressure = new Chart(document.getElementById('chartCO2Pressure'), {
-				type: 'line',
-				data: {
-					labels: data.time,
-					datasets: [
-						{ id: 'co2', label: 'CO₂ (ppm)', data: data.co2, borderColor: 'green', yAxisID: 'yC' },
-						{ id: 'pressure', label: 'Pressure (hPa)', data: data.pressure, borderColor: 'purple', yAxisID: 'yP' }
-					]
-				},
-				options: {
-					...baseOptions(),
-					scales: {
-						x: baseOptions().scales.x,
-						yC: { position: 'left', title: { display: true, text: 'ppm' } },
-						yP: { position: 'right', title: { display: true, text: 'hPa' }, grid: { drawOnChartArea: false } }
+			document.querySelectorAll('.controls input[type="checkbox"]').forEach(checkbox => {
+				checkbox.onchange = () => {
+					const dataset = pumpOutChart.data.datasets.find(item => item.id === checkbox.dataset.id);
+					if (dataset) {
+						dataset.hidden = !checkbox.checked;
+						pumpOutChart.update();
 					}
-				}
-			});
-
-			/* ===== Sync Zoom/Pan ===== */
-			function sync(source) {
-				const { min, max } = source.scales.x;
-				[chartTempHum, chartCO2Pressure].forEach(c => {
-					if (c !== source) { c.options.scales.x.min = min; c.options.scales.x.max = max; c.update('none'); }
-				});
-			}
-
-			chartTempHum.options.plugins.zoom.zoom.onZoomComplete = ({ chart }) => sync(chart);
-			chartCO2Pressure.options.plugins.zoom.zoom.onZoomComplete = ({ chart }) => sync(chart);
-			chartTempHum.options.plugins.zoom.pan.onPanComplete = ({ chart }) => sync(chart);
-			chartCO2Pressure.options.plugins.zoom.pan.onPanComplete = ({ chart }) => sync(chart);
-
-			/* ===== Checkbox Handling ===== */
-			document.querySelectorAll('.controls input').forEach(cb => {
-				cb.onchange = () => {
-					[chartTempHum, chartCO2Pressure].forEach(c => {
-						const ds = c.data.datasets.find(d => d.id === cb.dataset.id);
-						if (ds) { ds.hidden = !cb.checked; c.update(); }
-					});
 				};
 			});
-
+		}).catch(error => {
+			console.error(error);
+			drawMessage("Could not load data.csv.");
 		});
 
-		/* ================= RESET ================= */
-		document.addEventListener('dblclick', () => {
-
-			[chartTempHum, chartCO2Pressure].forEach(c => {
-				c.options.scales.x.min = initialMinX;
-				c.options.scales.x.max = initialMaxX;
-				c.update();
-			});
-
+		document.addEventListener("dblclick", () => {
+			if (!pumpOutChart) return;
+			pumpOutChart.options.scales.x.min = initialMinX;
+			pumpOutChart.options.scales.x.max = initialMaxX;
+			pumpOutChart.update();
 		});
 	</script>
-
 </body>
-
 </html>

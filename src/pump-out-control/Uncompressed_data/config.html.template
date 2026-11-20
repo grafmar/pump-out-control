@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Simple Sensorlogger ESP32 – Log Configuration</title>
+<title>Pump-out Control – Log Configuration</title>
 <link rel="icon" type="image/png" sizes="144x144" href="/favicon-144x144.png">
 <link rel="icon" type="image/png" sizes="96x96" href="/favicon.ico">
 <link rel="manifest" href="/manifest.json">
@@ -12,7 +12,7 @@
 
 <body>
 
-<h1>Simple Sensorlogger ESP32</h1>
+<h1>Pump-out Control</h1>
 
 <div class="card">
 
@@ -56,7 +56,7 @@
 <h3>Calculation</h3>
 <p>Interval in seconds: <span id="intervalSec"></span>s</p>
 <p>Max chunk size: 32 kB</p>
-<p>Estimated log duration (min): <span id="logDuration"></span></p>
+<p>Estimated duration for samples only: <span id="logDuration"></span></p>
 </div>
 
 </div>
@@ -67,7 +67,7 @@
 
 <script>
 const maxChunkKB = 32;
-const entrySize = 47; // Bytes per log entry
+const entrySize = 19; // Approximate bytes per sample row
 const entriesPerChunk = (maxChunkKB*1024)/entrySize;
 
 const intervalValueEl = document.getElementById('intervalValue');

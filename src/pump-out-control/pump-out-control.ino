@@ -5,42 +5,72 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
 #include <LittleFS.h>
+#include <HCSR04.h>
 
 #define ONE_HOUR 3600000UL
 #define DEFAULT_LOG_INTERVAL_S 1200UL
 #define DEFAULT_NUM_LOG_FILES 16
 #define CHUNK_SIZE_BYTES 32768
 #define MAX_LOG_FILES 48
+#define TRIG D5
+#define ECHO D8
+#define LOAD D2
 
-// Dummy Klasse für den TempSensor
-class TempSensor {
+const unsigned long SENSOR_SAMPLE_INTERVAL_MS = 1000UL;
+const unsigned long NTP_RETRY_INTERVAL_MS = 10000UL;
+const float MIN_DISTANCE_CM = 5.0f;
+const float MAX_DISTANCE_CM = 50.0f;
+const float LOW_LEVEL_DISTANCE_CM = 31.0f;
+const float PUMP_ON_WATER_LEVEL_CM = 21.0f;
+const float PUMP_OFF_WATER_LEVEL_CM = 3.0f;
+const uint8_t INVALID_SAMPLE_LIMIT = 10;
+const unsigned long MAX_PUMP_RUNTIME_MS = 20UL * 60UL * 1000UL;
+
+UltraSonicDistanceSensor distanceSensor(TRIG, ECHO);
+
+class WaterLevelSensor {
 public:
-  TempSensor();                   // Constructor declaration
-  ~TempSensor();                  // Destructor declaration
-  
-  void setWaitForConversion(bool wait);
-  void begin();
-  uint8_t getDeviceCount();
-  void requestTemperatures();
-  float getTempCByIndex(uint8_t index);
+  bool update(unsigned long currentMillis) {
+    if (currentMillis - m_lastSampleMillis < SENSOR_SAMPLE_INTERVAL_MS) return false;
+    m_lastSampleMillis = currentMillis;
+
+    float distanceSum = 0.0f;
+    uint8_t validCount = 0;
+    for (uint8_t i = 0; i < 5; i++) {
+      if (i > 0) delay(60);
+      float distance = distanceSensor.measureDistanceCm();
+      if (distance >= MIN_DISTANCE_CM && distance <= MAX_DISTANCE_CM) {
+        distanceSum += distance;
+        validCount++;
+      }
+    }
+
+    m_valid = validCount >= 3;
+    if (!m_valid) return true;
+
+    float distanceCm = distanceSum / validCount;
+    m_waterLevelCm = LOW_LEVEL_DISTANCE_CM - distanceCm;
+    return true;
+  }
+
+  bool isValid() const { return m_valid; }
+  float waterLevelCm() const { return m_waterLevelCm; }
 
 private:
-  bool m_wait;                    // Private member variable
+  unsigned long m_lastSampleMillis = 0;
+  float m_waterLevelCm = 0.0f;
+  bool m_valid = false;
 };
-TempSensor::TempSensor(): m_wait(true){}
-TempSensor::~TempSensor() {}
-void TempSensor::setWaitForConversion(bool wait) { m_wait = wait; }
-void TempSensor::begin() {}
-uint8_t TempSensor::getDeviceCount() { return 1; }
-void TempSensor::requestTemperatures() {}
-float TempSensor::getTempCByIndex(uint8_t index) {
-  float minTemp = 20.0;
-  float maxTemp = 25.0;
-  return random(minTemp * 10, maxTemp * 10) / 10.0;
-}
 
-
-TempSensor tempSensors; // Create an instance of the temperature sensor class
+WaterLevelSensor waterLevelSensor;
+bool pumpActive = false;
+unsigned long pumpStartMillis = 0;
+uint8_t consecutiveInvalidSamples = 0;
+unsigned long lastLogMillis = 0;
+const unsigned long intervalNTP = ONE_HOUR;
+unsigned long prevNTP = 0;
+unsigned long lastNTPResponse = millis();
+uint32_t timeUNIX = 0;
 
 ESP8266WebServer server(80);             // create a web server on port 80
 
@@ -48,6 +78,10 @@ File fsUploadFile;                                    // a File variable to temp
 uint32_t logInterval = DEFAULT_LOG_INTERVAL_S;
 uint8_t numOfLogFiles = DEFAULT_NUM_LOG_FILES;
 
+void setPumpActive(bool active);
+void startPump();
+void stopPump();
+void checkNTPResponse();
 void handleConfigPage();
 void handleSaveSettings();
 void handleDataDownload();
@@ -56,12 +90,13 @@ void loadLogSettings();
 bool saveLogSettings();
 void enforceLogFileLimit();
 bool rotateLogs();
-void writeLog(uint32_t timestamp, float temperature);
+void writeLog(float waterLevelCm, uint32_t pumpRuntimeSeconds = 0);
+uint32_t currentUnixTime();
 
-const char *OTAName = "ESP8266";         // A name and a password for the OTA service
-const char *OTAPassword = "esp8266";
+const char *OTAName = "Pumpe";         // A name and a password for the OTA service
+const char *OTAPassword = "pumpe";
 
-const char* mdnsName = "esp8266";        // Domain name for the mDNS responder
+const char* mdnsName = "pumpe";        // Domain name for the mDNS responder
 
 WiFiUDP UDP;                   // Create an instance of the WiFiUDP class to send and receive UDP messages
 
@@ -75,29 +110,21 @@ byte packetBuffer[NTP_PACKET_SIZE];      // A buffer to hold incoming and outgoi
 /*__________________________________________________________SETUP__________________________________________________________*/
 
 void setup() {
+  pinMode(LOAD, OUTPUT);
+  digitalWrite(LOAD, LOW);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+
   Serial.begin(115200);        // Start the Serial communication to send messages to the computer
   delay(10);
   Serial.println("\r\n");
-
-  tempSensors.setWaitForConversion(false); // Don't block the program while the temperature sensor is reading
-  tempSensors.begin();                     // Start the temperature sensor
-
-  if (tempSensors.getDeviceCount() == 0) {
-    Serial.printf("No DS18x20 temperature sensor found on pin %d. Rebooting.\r\n", 5);
-    Serial.flush();
-    ESP.reset();
-  }
 
   startWiFi();                 // Start a Wi-Fi access point, and try to connect to some given access points. Then wait for either an AP or STA connection
 
   startOTA();                  // Start the OTA service
 
   startLittleFS();             // Start the LittleFS and list all contents
-  if (!LittleFS.exists("/log_0.csv") && LittleFS.exists("/data.csv")) {
-    if (!LittleFS.rename("/data.csv", "/log_0.csv")) {
-      Serial.println("Failed to migrate legacy data.csv.");
-    }
-  }
+
   loadLogSettings();
 
   startMDNS();                 // Start the mDNS responder
@@ -110,67 +137,92 @@ void setup() {
   Serial.print("Time server IP:\t");
   Serial.println(timeServerIP);
 
+  prevNTP = millis();
   sendNTPpacket(timeServerIP);
-  delay(500);
 }
 
 /*__________________________________________________________LOOP__________________________________________________________*/
 
-const unsigned long intervalNTP = ONE_HOUR; // Update the time every hour
-unsigned long prevNTP = 0;
-unsigned long lastNTPResponse = millis();
-
-unsigned long prevTemp = 0;
-bool tmpRequested = false;
-const unsigned long DS_delay = 750;         // Reading the temperature from the DS18x20 can take up to 750ms
-
-uint32_t timeUNIX = 0;                      // The most recent timestamp received from the time server
-
 void loop() {
   unsigned long currentMillis = millis();
 
-  if (currentMillis - prevNTP > intervalNTP) { // Request the time from the time server every hour
+  // resend NTP request if no response has been received within the retry interval, or if the time has been set and the interval has passed
+  if ((timeUNIX == 0 && currentMillis - prevNTP >= NTP_RETRY_INTERVAL_MS) ||
+      (timeUNIX != 0 && currentMillis - prevNTP >= intervalNTP)) {
     prevNTP = currentMillis;
     sendNTPpacket(timeServerIP);
   }
 
-  uint32_t time = getTime();                   // Check if the time server has responded, if so, get the UNIX time
+  checkNTPResponse();
+
+  if (waterLevelSensor.update(currentMillis)) {
+    if (!waterLevelSensor.isValid()) {
+      Serial.println("Invalid ultrasonic distance (expected 5-50 cm).");
+      if (consecutiveInvalidSamples < INVALID_SAMPLE_LIMIT) {
+        consecutiveInvalidSamples++;
+      }
+      if (pumpActive && consecutiveInvalidSamples >= INVALID_SAMPLE_LIMIT) {
+        stopPump();
+      }
+    } else {
+      consecutiveInvalidSamples = 0;
+      float level = waterLevelSensor.waterLevelCm();
+      Serial.printf("Water level: %.2f cm\n", level);
+
+      if (!pumpActive && level >= PUMP_ON_WATER_LEVEL_CM) {
+        startPump();
+      } else if (pumpActive && level <= PUMP_OFF_WATER_LEVEL_CM) {
+        stopPump();
+      }
+    }
+  }
+
+  currentMillis = millis();
+  if (pumpActive && currentMillis - pumpStartMillis >= MAX_PUMP_RUNTIME_MS) {
+    Serial.println("Maximum pump runtime reached; stopping pump.");
+    stopPump();
+  }
+
+  if (waterLevelSensor.isValid() && currentMillis - lastLogMillis >= logInterval * 1000UL) {
+    lastLogMillis = currentMillis;
+    writeLog(waterLevelSensor.waterLevelCm());
+  }
+
+  server.handleClient();                      // run the server
+  ArduinoOTA.handle();                        // listen for OTA events
+}
+
+void checkNTPResponse() {
+  uint32_t time = getTime();
   if (time) {
     timeUNIX = time;
     Serial.print("NTP response:\t");
     Serial.println(timeUNIX);
     lastNTPResponse = millis();
-  } else if ((millis() - lastNTPResponse) > 24UL * ONE_HOUR) {
+  } else if (millis() - lastNTPResponse > 24UL * ONE_HOUR) {
     Serial.println("More than 24 hours since last NTP response. Rebooting.");
     Serial.flush();
     ESP.reset();
   }
+}
 
-  if (timeUNIX != 0) {
-    if (currentMillis - prevTemp > logInterval * 1000UL) {
-      tempSensors.requestTemperatures(); // Request the temperature from the sensor (it takes some time to read it)
-      tmpRequested = true;
-      prevTemp = currentMillis;
-      Serial.println("Temperature requested");
-    }
-    if (currentMillis - prevTemp > DS_delay && tmpRequested) { // 750 ms after requesting the temperature
-      uint32_t actualTime = timeUNIX + (currentMillis - lastNTPResponse) / 1000;
-      // The actual time is the last NTP time plus the time that has elapsed since the last NTP response
-      tmpRequested = false;
-      float temp = tempSensors.getTempCByIndex(0); // Get the temperature from the sensor
-      temp = round(temp * 100.0) / 100.0; // round temperature to 2 digits
+void setPumpActive(bool active) {
+  pumpActive = active;
+  digitalWrite(LOAD, active ? HIGH : LOW);
+  digitalWrite(LED_BUILTIN, active ? LOW : HIGH);
+}
 
-      Serial.printf("Appending temperature to file: %lu;", actualTime);
-      Serial.println(temp);
-      writeLog(actualTime, temp);
-    }
-  } else {                                    // If we didn't receive an NTP response yet, send another request
-    sendNTPpacket(timeServerIP);
-    delay(500);
-  }
+void startPump() {
+  pumpStartMillis = millis();
+  setPumpActive(true);
+  Serial.println("Pump started.");
+}
 
-  server.handleClient();                      // run the server
-  ArduinoOTA.handle();                        // listen for OTA events
+void stopPump() {
+  uint32_t runtimeSeconds = (millis() - pumpStartMillis) / 1000UL;
+  setPumpActive(false);
+  Serial.printf("Pump stopped after %lu s.\n", static_cast<unsigned long>(runtimeSeconds));
+  writeLog(waterLevelSensor.waterLevelCm(), runtimeSeconds);
 }
 
 /*__________________________________________________________SETUP_FUNCTIONS__________________________________________________________*/
@@ -393,7 +445,13 @@ bool rotateLogs() {
   return true;
 }
 
-void writeLog(uint32_t timestamp, float temperature) {
+void writeLog(float waterLevelCm, uint32_t pumpRuntimeSeconds) {
+  if (timeUNIX == 0) {
+    Serial.println("NTP time unavailable; dropping log entry.");
+    return;
+  }
+
+  uint32_t timestamp = currentUnixTime();
   String path = "/log_0.csv";
   if (LittleFS.exists(path)) {
     File currentLog = LittleFS.open(path, "r");
@@ -412,20 +470,18 @@ void writeLog(uint32_t timestamp, float temperature) {
     return;
   }
 
-  logFile.print(timestamp);
-  logFile.print(';');
-  logFile.print(temperature, 2);
-  logFile.print(';');
-  logFile.print(2 * temperature, 2);
-  logFile.print(';');
-  logFile.print(45.0 - 1.2 * temperature, 2);
-  logFile.print(';');
-  logFile.print(2 * (45.0 - temperature), 2);
-  logFile.print(';');
-  logFile.print(2.0 + 1.1 * temperature, 2);
-  logFile.print(';');
-  logFile.println(43.0 - temperature, 2);
+  bool success = logFile.print(timestamp) > 0;
+  success = (logFile.print(';') == 1) && success;
+  success = (logFile.print(waterLevelCm, 2) > 0) && success;
+  success = (logFile.print(';') == 1) && success;
+  if (pumpRuntimeSeconds > 0) success = (logFile.print(pumpRuntimeSeconds) > 0) && success;
+  success = (logFile.println() > 0) && success;
   logFile.close();
+  if (!success) Serial.println("Failed while writing log record.");
+}
+
+uint32_t currentUnixTime() {
+  return timeUNIX + (millis() - lastNTPResponse) / 1000UL;
 }
 
 void handleDataDownload() {

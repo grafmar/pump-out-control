@@ -1,6 +1,6 @@
 {
- "name": "Simple Sensorlogger ESP32",
- "short_name": "Sensorlogger",
+ "name": "Pump-out Control",
+ "short_name": "Pump-out",
  "icons": [
   {
    "src": "\/favicon-144x144.png",
