@@ -51,6 +51,7 @@
 		let initialMaxX = null;
 		const BUCKET_DIAMETER_CM = 26;
 		const LITERS_PER_CM = Math.PI * (BUCKET_DIAMETER_CM / 2) ** 2 / 1000;
+		const PUMP_ON_WATER_LEVEL_CM = 21;
 
 		Chart.register(ChartZoom);
 
@@ -93,8 +94,6 @@
 			const averageWaterPerDay = [];
 			let cumulativeLiters = 0;
 			let previousPumpEventTime = null;
-			let sampleIndex = 0;
-			let waterLevelBeforePump = NaN;
 
 			for (let i = 0; i < data.time.length; i++) {
 				accumulatedWater.push(cumulativeLiters);
@@ -103,17 +102,9 @@
 				if (!Number.isFinite(data.pumpRuntime[i]) || data.pumpRuntime[i] <= 0) continue;
 
 				const eventTime = data.time[i].getTime();
-				const pumpStartTime = eventTime - data.pumpRuntime[i] * 1000;
-				while (sampleIndex < i && data.time[sampleIndex].getTime() <= pumpStartTime) {
-					if (Number.isFinite(data.waterLevel[sampleIndex])) {
-						waterLevelBeforePump = data.waterLevel[sampleIndex];
-					}
-					sampleIndex++;
-				}
-
 				const waterLevelAfterPump = data.waterLevel[i];
-				const eventVolume = Number.isFinite(waterLevelBeforePump) && Number.isFinite(waterLevelAfterPump)
-					? Math.max(0, waterLevelBeforePump - waterLevelAfterPump) * LITERS_PER_CM
+				const eventVolume = Number.isFinite(waterLevelAfterPump)
+					? Math.max(0, PUMP_ON_WATER_LEVEL_CM - waterLevelAfterPump) * LITERS_PER_CM
 					: NaN;
 
 				if (Number.isFinite(eventVolume)) {
