@@ -36,7 +36,8 @@ public:
 
     float distanceSum = 0.0f;
     uint8_t validCount = 0;
-    for (uint8_t i = 0; i < 5; i++) {
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+    for (uint8_t i = 0; i < 3; i++) {
       if (i > 0) delay(60);
       float distance = distanceSensor.measureDistanceCm();
       if (distance >= MIN_DISTANCE_CM && distance <= MAX_DISTANCE_CM) {
@@ -44,8 +45,9 @@ public:
         validCount++;
       }
     }
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 
-    m_valid = validCount >= 3;
+    m_valid = validCount >= 2;
     if (!m_valid) return true;
 
     float distanceCm = distanceSum / validCount;

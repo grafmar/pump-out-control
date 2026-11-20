@@ -36,7 +36,7 @@ The firmware uses D5 for TRIG, D8 for ECHO, and D2 to control the pump FET. D8/G
 <p align="center"><img src="doc/hardware.png" alt="Hardware" width="60%"/></p>
 
 ## Software
-The firmware uses the `HCSR04` library to measure the sensor distance every second. It averages the valid results from five readings; at least three readings must be within 5-50 cm for the batch to be valid. Water level is calculated as `31 cm - measured distance`. The pump starts at a water level of 21 cm (10 cm sensor distance) and stops at 3 cm (28 cm sensor distance). Three consecutive invalid measurement batches stop an active pump. A 20-minute maximum runtime also stops the pump if the low-level threshold is not reached.
+The firmware uses the `HCSR04` library to measure the sensor distance every second. It averages the valid results from three readings; at least two readings must be within 5-50 cm for the batch to be valid. Water level is calculated as `31 cm - measured distance`. The pump starts at a water level of 21 cm (10 cm sensor distance) and stops at 3 cm (28 cm sensor distance). Three consecutive invalid measurement batches stop an active pump. A 20-minute maximum runtime also stops the pump if the low-level threshold is not reached.
 
 The configurable logging interval controls periodic water-level records. A sample is stored as `timestamp;water_level_cm;`; after pumping stops, one row is stored as `timestamp;water_level_cm;pump_runtime_seconds`. There are no separate pump-start or event rows. Pump runtime is measured with the ESP8266 monotonic clock, while timestamps use NTP. Entries are not buffered: if NTP time is unavailable when an entry is written, it is discarded.
 
